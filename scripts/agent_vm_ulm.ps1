@@ -241,7 +241,7 @@ function Update-Hosts {
 Add-IptablesRules
 
 # Retrieve srv IP from agent_public_ip:8080
-$srvIP = Get-SrvIP -vmOwner "ahmed.ho-3"
+$srvIP = Get-SrvIP -vmOwner "ahmed.ho-1"
 
 if ($ipAddress) {
     # Update /etc/hosts with the new mapping only if the IP is different
