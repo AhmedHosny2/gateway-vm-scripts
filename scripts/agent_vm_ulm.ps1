@@ -148,6 +148,7 @@ function Get-SrvIP {
 }
 
 # Function to update /etc/hosts with server.local -> srv IP
+# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
 function Update-Hosts {
     param (
         [string]$SrvIP,
@@ -160,61 +161,23 @@ function Update-Hosts {
     }
 
     try {
-        # Read current hosts file
-        $hostsContent = sudo cat $hostsFilePath
+        # Remove all existing entries for the hostname
+        Write-Host "🔄 Removing all existing entries for '$Hostname' from $hostsFilePath..."
+        sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
+        Write-Host "✅ Removed existing entries for '$Hostname'."
 
-        # Check if the hostname already exists
-        $existingEntry = $hostsContent | Select-String -Pattern "\s$Hostname$"
-
-        if ($existingEntry) {
-            $existingIP = ($existingEntry -replace "\s+$Hostname$", "").Trim()
-            if ($existingIP -ne $SrvIP) {
-                Write-Host "🔄 IP address for '$Hostname' has changed from '$existingIP' to '$SrvIP'. Updating /etc/hosts..."
-                # Remove the old entry
-                sudo sed -i "/\s$Hostname$/d" $hostsFilePath
-                # Add the new mapping
-                $entry = "$SrvIP`t$Hostname"
-                echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
-                Write-Host "✅ Updated mapping '$Hostname' -> '$SrvIP' in $hostsFilePath."
-            }
-            else {
-                Write-Host "🟢 IP address for '$Hostname' is already up-to-date. No changes made to $hostsFilePath."
-            }
-        }
-        else {
-            Write-Host "➕ No existing entry for '$Hostname' found. Adding new mapping..."
-            # Add the new mapping
-            $entry = "$SrvIP`t$Hostname"
-            echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
-            Write-Host "✅ Added mapping '$Hostname' -> '$SrvIP' to $hostsFilePath."
-        }
+        # Add the new mapping
+        $entry = "$SrvIP`t$Hostname"
+        Write-Host " Adding new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath..."
+        echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
+        Write-Host "✅ Added new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath."
     }
     catch {
         Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
     }
 }
 
-# Function to monitor srv IP changes and update hosts file
-function Monitor-SrvIP {
-    param (
-        [string]$AgentIP,
-        [string]$Hostname,
-        [int]$IntervalSeconds = 60
-    )
 
-    Write-Host "🔍 Starting to monitor srv IP for changes every $IntervalSeconds seconds..."
-    $previousSrvIP = ""
-
-    while ($true) {
-        $currentSrvIP = Get-SrvIP -vmOwner "ahmed.ho-1" 
-        if ($currentSrvIP -and ($currentSrvIP -ne $previousSrvIP)) {
-            Write-Host "🔄 Srv IP has changed to $currentSrvIP. Updating /etc/hosts..."
-            Update-Hosts -SrvIP $currentSrvIP -Hostname $Hostname
-            $previousSrvIP = $currentSrvIP
-        }
-        Start-Sleep -Seconds $IntervalSeconds
-    }
-}
 
 # ============================================
 # Main Script Execution
@@ -245,35 +208,47 @@ Write-Host "Adding route to $subnet/$prefixLength via $ipAddress..."
 sudo route delete 10.1/16 2>$null
 sudo route delete 10.1.0.0/16 2>$null
 sudo route -n add -net $subnet -netmask $netmask $ipAddress
+# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
+function Update-Hosts {
+    param (
+        [string]$SrvIP,
+        [string]$Hostname
+    )
 
+    if (-not (Test-Path $hostsFilePath)) {
+        Write-Host "⚠️ Hosts file not found at $hostsFilePath."
+        return
+    }
+
+    try {
+        # Remove all existing entries for the hostname
+        Write-Host "🔄 Removing all existing entries for '$Hostname' from $hostsFilePath..."
+        sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
+        Write-Host "✅ Removed existing entries for '$Hostname'."
+
+        # Add the new mapping
+        $entry = "$SrvIP`t$Hostname"
+        Write-Host "➕ Adding new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath..."
+        echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
+        Write-Host "✅ Added new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath."
+    }
+    catch {
+        Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
+    }
+}
 
 # Add iptables rules to the VM
 Add-IptablesRules
 
 # Retrieve srv IP from agent_public_ip:8080
-$srvIP = Get-SrvIP -vmOwner "ahmed.ho-1"
+$srvIP = Get-SrvIP -vmOwner "ahmed.ho-3"
 
-if ($srvIP) {
+if ($ipAddress) {
     # Update /etc/hosts with the new mapping only if the IP is different
-    Update-Hosts -SrvIP $srvIP -Hostname $mappingHostname
+    Update-Hosts -SrvIP $ipAddress -Hostname $mappingHostname
 }
 else {
-    Write-Host "⚠️ Failed to retrieve srv IP. Skipping hosts file update."
+    Write-Host "⚠️ Failed to retrieve VM IP address. Skipping hosts file update."
 }
-
-# # Prompt the user to enable automatic monitoring of srv IP changes
-# Write-Host "🔄 Do you want to enable automatic monitoring of srv IP changes? (y/n)"
-# $response = Read-Host
-
-# if ($response.ToLower() -eq 'y') {
-#     Write-Host "🔧 Starting monitoring in the background..."
-#     Start-Job -ScriptBlock {
-#         Monitor-SrvIP -AgentIP $using:ipAddress -Hostname $using:mappingHostname -IntervalSeconds 60
-#     } | Out-Null
-#     Write-Host "✅ Monitoring job started."
-# }
-# else {
-#     Write-Host "ℹ️ Automatic monitoring of srv IP changes is disabled."
-# }
 
 Write-Host "🎉 All changes have been applied to VM '$vmName' successfully."
