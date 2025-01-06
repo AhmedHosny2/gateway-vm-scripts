@@ -211,26 +211,45 @@ sudo route -n add -net $subnet -netmask $netmask $ipAddress
 # Function to update /etc/hosts with server.local -> MultipassVMIPAddress
 function Update-Hosts {
     param (
+        [Parameter(Mandatory = $true)]
         [string]$SrvIP,
+
+        [Parameter(Mandatory = $true)]
         [string]$Hostname
     )
 
+    # Define the path to the hosts file
+    $hostsFilePath = "/etc/hosts"
+
+    # Check if the hosts file exists
     if (-not (Test-Path $hostsFilePath)) {
         Write-Host "⚠️ Hosts file not found at $hostsFilePath."
         return
     }
 
     try {
-        # Remove all existing entries for the hostname
-        Write-Host "🔄 Removing all existing entries for '$Hostname' from $hostsFilePath..."
-        sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
-        Write-Host "✅ Removed existing entries for '$Hostname'."
+        # Read all lines from the hosts file with elevated permissions
+        Write-Host "🔄 Reading existing entries from $hostsFilePath..."
+        $hostsContent = sudo cat $hostsFilePath | ConvertFrom-String
 
-        # Add the new mapping
-        $entry = "$SrvIP`t$Hostname"
-        Write-Host "➕ Adding new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath..."
-        echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
-        Write-Host "✅ Added new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath."
+        # Alternatively, use Get-Content with sudo
+        $hostsContent = sudo cat $hostsFilePath
+
+        # Remove any existing lines that contain the exact hostname
+        Write-Host "🔄 Removing existing entries for '$Hostname' from $hostsFilePath..."
+        $filteredContent = $hostsContent | Where-Object { $_ -notmatch "^\s*\S+\s+$Hostname\s*$" }
+
+        # Prepare the new entry
+        $newEntry = "$SrvIP`t$Hostname"
+
+        # Add the new entry to the filtered content
+        $updatedContent = $filteredContent + $newEntry
+
+        # Write the updated content back to the hosts file with elevated permissions
+        Write-Host "➕ Updating $hostsFilePath with the new entry..."
+        $updatedContent | sudo tee $hostsFilePath > $null
+
+        Write-Host "✅ Successfully updated $hostsFilePath with '$Hostname' -> '$SrvIP'."
     }
     catch {
         Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
