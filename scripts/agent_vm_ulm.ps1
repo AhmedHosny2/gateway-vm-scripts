@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 
 # ============================================
-# Script to Configure Multipass VM and Host Mapping
+# Script to Configure Multipass VM, NGINX, and Host Mapping
 # ============================================
 
 # Define Configuration Variables
@@ -13,7 +13,8 @@ $vmInterface = "vx"         # Replace with your VM's internal interface name
 $hostInterface = "enp0s1"   # Replace with your host's external interface name
 $mappingHostname = "server.local"
 $hostsFilePath = "/etc/hosts"
-
+$updateScriptPath = "/home/ubuntu/update_srv_ip.sh"  # Path inside the VM
+$cronJob = "*/10 * * * * /bin/bash /home/ubuntu/update_srv_ip.sh >> /var/log/update_srv_ip.log 2>&1"
 
 # ============================================
 # Function Definitions
@@ -26,31 +27,20 @@ function Test-Admin {
         return ($uid -eq 0)
     }
     catch {
-        Write-Host "⚠️ Unable to determine if the script is running as root."
         return $false
     }
 }
 
-# Function to restart the script with elevated privileges
-# function Restart-AsAdmin {
-#     Write-Host "🔒 Script is not running as root. Restarting with elevated privileges..."
-#     sudo pwsh -File "$PSCommandPath"
-#     exit
-# }
-
 # Function to wait until the VM is running
 function Wait-ForVM {
-    Write-Host "⏳ Waiting for the VM '$vmName' to fully start..."
     do {
         $status = (multipass info $vmName | Select-String -Pattern "State" -SimpleMatch | ForEach-Object { $_ -replace "State:\s*", "" }).Trim()
         Start-Sleep -Seconds 2
     } while ($status -ne "Running")
-    Write-Host "✅ VM '$vmName' is running."
 }
 
 # Function to get the IP address of the VM
 function Get-MultipassVMIPAddress {
-    Write-Host "🔍 Retrieving the IP address of the VM..."
     $ip = ""
     while ([string]::IsNullOrWhiteSpace($ip)) {
         Start-Sleep -Seconds 2
@@ -59,18 +49,11 @@ function Get-MultipassVMIPAddress {
             $ip = $vmInfo -replace "IPv4:\s*", ""
         }
     }
-    Write-Host "✅ VM '$vmName' IP Address: $ip"
     return $ip
 }
 
-# Function to add a network route if it doesn't exist
-
-
-# Function to manually add iptables rules individually
+# Function to add iptables rules to the VM
 function Add-IptablesRules {
-    Write-Host "🔧 Adding iptables rules to VM '$vmName'..."
-
-    # Define each iptables command individually
     $iptablesCommands = @(
         "sudo iptables -I FORWARD -p icmp -j ACCEPT",
         "sudo iptables -I FORWARD -p tcp --dport 80 -j ACCEPT",
@@ -87,10 +70,10 @@ function Add-IptablesRules {
 
     foreach ($cmd in $iptablesCommands) {
         try {
-            multipass exec $vmName -- bash -c "$cmd"
+            & sudo bash -c "$cmd"
         }
         catch {
-            Write-Host "⚠️ Failed to add iptables rule: $cmd. Error: $_"
+            Write-Error "Failed to add iptables rule: $cmd. Error: $_"
         }
     }
 
@@ -98,30 +81,21 @@ function Add-IptablesRules {
     try {
         $ipForwarding = multipass exec $vmName -- bash -c "sysctl -n net.ipv4.ip_forward"
         if ($ipForwarding -ne "1") {
-            Write-Host "🔄 Enabling IP forwarding on VM '$vmName'..."
-            multipass exec $vmName -- sudo sysctl -w net.ipv4.ip_forward=1
-            Write-Host "✅ IP forwarding enabled."
-        }
-        else {
-            Write-Host "🟢 IP forwarding is already enabled on VM '$vmName'."
+            & sudo bash -c "sysctl -w net.ipv4.ip_forward=1"
         }
     }
     catch {
-        Write-Host "⚠️ Failed to check or enable IP forwarding. Error: $_"
+        Write-Error "Failed to check or enable IP forwarding. Error: $_"
     }
 
     # Save iptables rules to ensure persistence
     try {
-        Write-Host "💾 Saving iptables rules for persistence..."
-        multipass exec $vmName -- sudo mkdir -p /etc/iptables
-        multipass exec $vmName -- sudo bash -c "iptables-save > /etc/iptables/rules.v4"
-        Write-Host "✅ iptables rules saved successfully."
+        & sudo bash -c "multipass exec $vmName -- sudo mkdir -p /etc/iptables"
+        & sudo bash -c "multipass exec $vmName -- sudo bash -c 'iptables-save > /etc/iptables/rules.v4'"
     }
     catch {
-        Write-Host "⚠️ Failed to save iptables rules. Error: $_"
+        Write-Error "Failed to save iptables rules. Error: $_"
     }
-
-    Write-Host "🎉 All iptables rules have been applied to VM '$vmName'."
 }
 
 # Function to retrieve srv IP from agent_public_ip:8080
@@ -130,25 +104,16 @@ function Get-SrvIP {
         [string]$vmOwner
     )
     try {
-        Write-Host "🔍 Retrieving srv IP for owner '$vmOwner'..."
-        $ip = multipass exec $vmName -- sudo vx info | grep "$vmOwner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
-        if ($ip) {
-            Write-Host "✅ Retrieved srv IP: $ip"
-            return $ip
-        }
-        else {
-            Write-Host "⚠️ Unable to retrieve srv IP for owner '$vmOwner'."
-            return ""
-        }
+        $ip = multipass exec $vmName -- sudo vx info | grep "$vmOwner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | Select-Object -First 1
+        return $ip
     }
     catch {
-        Write-Host "⚠️ Failed to retrieve srv IP. Error: $_"
+        Write-Error "Failed to retrieve srv IP. Error: $_"
         return ""
     }
 }
 
 # Function to update /etc/hosts with server.local -> srv IP
-# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
 function Update-Hosts {
     param (
         [string]$SrvIP,
@@ -156,45 +121,200 @@ function Update-Hosts {
     )
 
     if (-not (Test-Path $hostsFilePath)) {
-        Write-Host "⚠️ Hosts file not found at $hostsFilePath."
+        Write-Error "Hosts file not found at $hostsFilePath."
         return
     }
 
     try {
-        # Remove all existing entries for the hostname
-        Write-Host "🔄 Removing all existing entries for '$Hostname' from $hostsFilePath..."
-        sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
-        Write-Host "✅ Removed existing entries for '$Hostname'."
-
-        # Add the new mapping
+        & sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
         $entry = "$SrvIP`t$Hostname"
-        Write-Host " Adding new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath..."
-        echo "$entry" | sudo tee -a $hostsFilePath > /dev/null
-        Write-Host "✅ Added new mapping '$Hostname' -> '$SrvIP' to $hostsFilePath."
+        & sudo bash -c "echo '$entry' >> $hostsFilePath"
     }
     catch {
-        Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
+        Write-Error "Failed to update /etc/hosts. Error: $_"
     }
 }
 
+# Function to install NGINX on the VM
+function Install-Nginx {
+    $commands = @(
+        "sudo apt-get update",
+        "sudo apt-get install -y nginx"
+    )
 
+    foreach ($cmd in $commands) {
+        try {
+            & sudo bash -c "$cmd"
+        }
+        catch {
+            Write-Error "Failed to execute '$cmd'. Error: $_"
+            exit 1
+        }
+    }
+
+    # Check NGINX status
+    try {
+        multipass exec $vmName -- systemctl status nginx --no-pager
+    }
+    catch {
+        Write-Error "Failed to retrieve NGINX status. Error: $_"
+    }
+}
+
+# Function to configure NGINX on the VM
+function Configure-Nginx {
+    $nginxConfig = @"
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        # server's IP 
+        proxy_pass http://10.1.0.123:3000; 
+        proxy_http_version 1.1;
+
+        # Preserve the original client IP
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # Preserve the original Host header
+        proxy_set_header Host \$host;
+    }
+}
+"@
+
+    try {
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $tempFile -Value $nginxConfig
+
+        multipass transfer ${tempFile} ${vmName}:/home/ubuntu/default_nginx.conf
+        multipass exec $vmName -- sudo mv /home/ubuntu/default_nginx.conf /etc/nginx/sites-available/default
+        multipass exec $vmName -- sudo chmod 644 /etc/nginx/sites-available/default
+        Remove-Item $tempFile
+    }
+    catch {
+        Write-Error "Failed to upload NGINX configuration. Error: $_"
+        exit 1
+    }
+
+    # Test and restart NGINX
+    try {
+        multipass exec $vmName -- sudo nginx -t
+        multipass exec $vmName -- sudo systemctl restart nginx
+    }
+    catch {
+        Write-Error "NGINX configuration test or restart failed. Error: $_"
+        exit 1
+    }
+}
+
+# Function to create update_srv_ip.sh on the VM
+function Create-UpdateScript {
+    $updateScriptContent = @"
+#!/bin/bash
+
+set -e  # Exit immediately if a command exits with a non-zero status
+
+# Function to retrieve the server's IP using vx and the owner name
+get_srv_ip() {
+    local vm_owner="\$1"  # The owner name to filter by
+
+    echo "🔍 Retrieving srv IP for owner '\$vm_owner'..." >&2
+
+    # Run the vx command to retrieve IPs and filter by the owner
+    # Capture only the first IP match
+    local ip_address
+    ip_address=\$(sudo vx info | grep "\$vm_owner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -n1)
+
+    if [[ -n "\$ip_address" ]]; then
+        echo "✅ Retrieved srv IP: \$ip_address" >&2
+        echo "\$ip_address"
+    else
+        echo "⚠️ Unable to retrieve srv IP for owner '\$vm_owner'." >&2
+        return 1
+    fi
+}
+
+# Function to update NGINX configuration with the new IP
+update_nginx_config() {
+    local new_ip="\$1"
+    local nginx_config="/etc/nginx/sites-available/default"
+
+    echo "🔧 Updating NGINX configuration with new IP: \$new_ip..." >&2
+
+    # Backup the original NGINX configuration
+    sudo cp "\$nginx_config" "\${nginx_config}.bak"
+
+    # Use sed to replace the existing IP in the proxy_pass line
+    # This assumes the proxy_pass line follows the exact format:
+    # proxy_pass http://10.x.x.x:port;
+    sudo sed -i "s|proxy_pass http://10\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}:[0-9]\{1,5\};|proxy_pass http://\$new_ip:3000;|g" "\$nginx_config"
+
+    echo "✅ NGINX configuration updated successfully." >&2
+}
+
+# Function to reload NGINX service
+reload_nginx() {
+    echo "🔄 Reloading NGINX service..." >&2
+    sudo nginx -t && sudo systemctl reload nginx
+    echo "✅ NGINX reloaded successfully." >&2
+}
+
+# Main execution block for update_srv_ip.sh
+main() {
+    local vm_owner="ahmed.ho-1"  # Replace with the actual VM owner name
+
+    # Retrieve the server IP
+    srv_ip=\$(get_srv_ip "\$vm_owner")
+
+    if [[ -n "\$srv_ip" ]]; then
+        update_nginx_config "\$srv_ip"  # Update NGINX configuration
+        reload_nginx  # Reload NGINX to apply changes
+    else
+        echo "⚠️ Failed to retrieve a valid server IP address. Exiting." >&2
+        exit 1
+    fi
+}
+
+# Execute the main function
+main
+"@
+
+    try {
+        $tempFile = [System.IO.Path]::GetTempFileName()
+        Set-Content -Path $tempFile -Value $updateScriptContent
+
+        multipass transfer ${tempFile} ${vmName}:/home/ubuntu/update_srv_ip.sh
+        multipass exec $vmName -- sudo chmod +x /home/ubuntu/update_srv_ip.sh
+        Remove-Item $tempFile
+    }
+    catch {
+        Write-Error "Failed to upload 'update_srv_ip.sh' script. Error: $_"
+        exit 1
+    }
+}
+
+# Function to set up cron job on the VM
+function Setup-CronJob {
+    try {
+        $existingCron = multipass exec $vmName -- crontab -l 2>$null | Select-String -Pattern "update_srv_ip.sh"
+        if (-not $existingCron) {
+            & sudo bash -c "echo '$cronJob' | multipass exec $vmName -- bash -c 'crontab -l | { cat; echo \"$cronJob\"; } | crontab -'"
+        }
+    }
+    catch {
+        Write-Error "Failed to set up cron job. Error: $_"
+        exit 1
+    }
+}
 
 # ============================================
 # Main Script Execution
 # ============================================
-Write-Host "🚀 Configuring Multipass VM and Host Mapping..."
-# Ensure the script is running with root privileges
 if (-not (Test-Admin)) {    
-    # send message till him to add sudo to the script and exit the script 
-    Write-Host "⚠️ This script requires elevated privileges to configure the VM and network settings."
+    Write-Error "This script requires elevated privileges to configure the VM and network settings."
     exit 1
 }
 
-# Uncomment the following line if you encounter Multipass authentication issues
-# multipass auth
-
 # Start the VM
-Write-Host "🚀 Starting the VM '$vmName'..."
 multipass start $vmName
 
 # Wait for the VM to be running
@@ -203,71 +323,31 @@ Wait-ForVM
 # Retrieve the IP address of the VM
 $ipAddress = Get-MultipassVMIPAddress
 
-# Add the network route if it doesn't exist
-Write-Host "Adding route to $subnet/$prefixLength via $ipAddress..."
-sudo route delete 10.1/16 2>$null
-sudo route delete 10.1.0.0/16 2>$null
-sudo route -n add -net $subnet -netmask $netmask $ipAddress
-# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
-function Update-Hosts {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$SrvIP,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Hostname
-    )
-
-    # Define the path to the hosts file
-    $hostsFilePath = "/etc/hosts"
-
-    # Check if the hosts file exists
-    if (-not (Test-Path $hostsFilePath)) {
-        Write-Host "⚠️ Hosts file not found at $hostsFilePath."
-        return
-    }
-
-    try {
-        # Read all lines from the hosts file with elevated permissions
-        Write-Host "🔄 Reading existing entries from $hostsFilePath..."
-        $hostsContent = sudo cat $hostsFilePath | ConvertFrom-String
-
-        # Alternatively, use Get-Content with sudo
-        $hostsContent = sudo cat $hostsFilePath
-
-        # Remove any existing lines that contain the exact hostname
-        Write-Host "🔄 Removing existing entries for '$Hostname' from $hostsFilePath..."
-        $filteredContent = $hostsContent | Where-Object { $_ -notmatch "^\s*\S+\s+$Hostname\s*$" }
-
-        # Prepare the new entry
-        $newEntry = "$SrvIP`t$Hostname"
-
-        # Add the new entry to the filtered content
-        $updatedContent = $filteredContent + $newEntry
-
-        # Write the updated content back to the hosts file with elevated permissions
-        Write-Host "➕ Updating $hostsFilePath with the new entry..."
-        $updatedContent | sudo tee $hostsFilePath > $null
-
-        Write-Host "✅ Successfully updated $hostsFilePath with '$Hostname' -> '$SrvIP'."
-    }
-    catch {
-        Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
-    }
-}
+# Add the network route
+& sudo route delete "10.1/16" 2>$null
+& sudo route delete "10.1.0.0/16" 2>$null
+& sudo route -n add -net "$subnet" -netmask "$netmask" "$ipAddress"
 
 # Add iptables rules to the VM
 Add-IptablesRules
 
+# Install and configure NGINX on the VM
+Install-Nginx
+Configure-Nginx
+
+# Create the update_srv_ip.sh script on the VM
+Create-UpdateScript
+
+# Run the update_srv_ip.sh script immediately
+multipass exec $vmName -- bash -c "/home/ubuntu/update_srv_ip.sh"
+
+# Set up cron job to run update_srv_ip.sh every 10 minutes
+Setup-CronJob
+
 # Retrieve srv IP from agent_public_ip:8080
 $srvIP = Get-SrvIP -vmOwner "ahmed.ho-1"
 
-if ($ipAddress) {
-    # Update /etc/hosts with the new mapping only if the IP is different
-    Update-Hosts -SrvIP $ipAddress -Hostname $mappingHostname
+if ($srvIP) {
+    # Update /etc/hosts with the new mapping
+    Update-Hosts -SrvIP $srvIP -Hostname $mappingHostname
 }
-else {
-    Write-Host "⚠️ Failed to retrieve VM IP address. Skipping hosts file update."
-}
-
-Write-Host "🎉 All changes have been applied to VM '$vmName' successfully."
