@@ -31,13 +31,6 @@ function Test-Admin {
     }
 }
 
-# Function to restart the script with elevated privileges
-# function Restart-AsAdmin {
-#     Write-Host "🔒 Script is not running as root. Restarting with elevated privileges..."
-#     sudo pwsh -File "$PSCommandPath"
-#     exit
-# }
-
 # Function to wait until the VM is running
 function Wait-ForVM {
     Write-Host "⏳ Waiting for the VM '$vmName' to fully start..."
@@ -63,10 +56,7 @@ function Get-MultipassVMIPAddress {
     return $ip
 }
 
-# Function to add a network route if it doesn't exist
-
-
-# Function to manually add iptables rules individually
+# Function to add iptables rules individually
 function Add-IptablesRules {
     Write-Host "🔧 Adding iptables rules to VM '$vmName'..."
 
@@ -147,8 +137,7 @@ function Get-SrvIP {
     }
 }
 
-# Function to update /etc/hosts with server.local -> srv IP
-# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
+# Function to update /etc/hosts with server.local -> VM IP
 function Update-Hosts {
     param (
         [string]$SrvIP,
@@ -185,8 +174,9 @@ function Update-Hosts {
 Write-Host "🚀 Configuring Multipass VM and Host Mapping..."
 # Ensure the script is running with root privileges
 if (-not (Test-Admin)) {    
-    # send message till him to add sudo to the script and exit the script 
+    # Notify the user to rerun the script with sudo and exit
     Write-Host "⚠️ This script requires elevated privileges to configure the VM and network settings."
+    Write-Host "🔄 Please rerun the script using 'sudo' and try again."
     exit 1
 }
 
@@ -208,53 +198,6 @@ Write-Host "Adding route to $subnet/$prefixLength via $ipAddress..."
 sudo route delete 10.1/16 2>$null
 sudo route delete 10.1.0.0/16 2>$null
 sudo route -n add -net $subnet -netmask $netmask $ipAddress
-# Function to update /etc/hosts with server.local -> MultipassVMIPAddress
-function Update-Hosts {
-    param (
-        [Parameter(Mandatory = $true)]
-        [string]$SrvIP,
-
-        [Parameter(Mandatory = $true)]
-        [string]$Hostname
-    )
-
-    # Define the path to the hosts file
-    $hostsFilePath = "/etc/hosts"
-
-    # Check if the hosts file exists
-    if (-not (Test-Path $hostsFilePath)) {
-        Write-Host "⚠️ Hosts file not found at $hostsFilePath."
-        return
-    }
-
-    try {
-        # Read all lines from the hosts file with elevated permissions
-        Write-Host "🔄 Reading existing entries from $hostsFilePath..."
-        $hostsContent = sudo cat $hostsFilePath | ConvertFrom-String
-
-        # Alternatively, use Get-Content with sudo
-        $hostsContent = sudo cat $hostsFilePath
-
-        # Remove any existing lines that contain the exact hostname
-        Write-Host "🔄 Removing existing entries for '$Hostname' from $hostsFilePath..."
-        $filteredContent = $hostsContent | Where-Object { $_ -notmatch "^\s*\S+\s+$Hostname\s*$" }
-
-        # Prepare the new entry
-        $newEntry = "$SrvIP`t$Hostname"
-
-        # Add the new entry to the filtered content
-        $updatedContent = $filteredContent + $newEntry
-
-        # Write the updated content back to the hosts file with elevated permissions
-        Write-Host "➕ Updating $hostsFilePath with the new entry..."
-        $updatedContent | sudo tee $hostsFilePath > $null
-
-        Write-Host "✅ Successfully updated $hostsFilePath with '$Hostname' -> '$SrvIP'."
-    }
-    catch {
-        Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
-    }
-}
 
 # Add iptables rules to the VM
 Add-IptablesRules
