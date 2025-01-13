@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 
 # ============================================
-# Script to Configure Multipass VM and Host Mapping
+# Script to Configure Multipass VM, Host Mapping, and NGINX Setup
 # ============================================
 
 # Define Configuration Variables
@@ -14,6 +14,96 @@ $hostInterface = "enp0s1"   # Replace with your host's external interface name
 $mappingHostname = "server.local"
 $hostsFilePath = "/etc/hosts"
 
+# Define NGINX Configuration
+$nginxConfig = @"
+server {
+    listen 80 default_server;
+    server_name _;
+
+    location / {
+        # server's IP 
+        proxy_pass http://10.1.0.123:3000; 
+        proxy_http_version 1.1;
+
+        # Preserve the original client IP
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        # Preserve the original Host header
+        proxy_set_header Host \$host;
+    }
+}
+"@
+
+# Define update_srv_ip.sh Script Content
+$updateSrvIpScript = @"
+#!/bin/bash
+
+set -e  # Exit immediately if a command exits with a non-zero status
+
+# Function to retrieve the server's IP using vx and the owner name
+get_srv_ip() {
+    local vm_owner="\$1"  # The owner name to filter by
+
+    echo "🔍 Retrieving srv IP for owner '\$vm_owner'..." >&2
+
+    # Run the vx command to retrieve IPs and filter by the owner
+    # Capture only the first IP match
+    local ip_address
+    ip_address=\$(sudo vx info | grep "\$vm_owner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -n1)
+
+    if [[ -n "\$ip_address" ]]; then
+        echo "✅ Retrieved srv IP: \$ip_address" >&2
+        echo "\$ip_address"
+    else
+        echo "⚠️ Unable to retrieve srv IP for owner '\$vm_owner'." >&2
+        return 1
+    fi
+}
+
+# Function to update NGINX configuration with the new IP
+update_nginx_config() {
+    local new_ip="\$1"
+    local nginx_config="/etc/nginx/sites-available/default"
+
+    echo "🔧 Updating NGINX configuration with new IP: \$new_ip..." >&2
+
+    # Backup the original NGINX configuration
+    sudo cp "\$nginx_config" "\${nginx_config}.bak"
+
+    # Use sed to replace the existing IP in the proxy_pass line
+    # This assumes the proxy_pass line follows the exact format:
+    # proxy_pass http://10.x.x.x:port;
+    sudo sed -i "s|proxy_pass http://10\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}:[0-9]\\{1,5\\};|proxy_pass http://\$new_ip:3000;|g" "\$nginx_config"
+
+    echo "✅ NGINX configuration updated successfully." >&2
+}
+
+# Function to reload NGINX service
+reload_nginx() {
+    echo "🔄 Reloading NGINX service..." >&2
+    sudo nginx -t && sudo systemctl reload nginx
+    echo "✅ NGINX reloaded successfully." >&2
+}
+
+# Main execution block
+main() {
+    local vm_owner="ahmed.ho-1"  # Replace with the actual VM owner name
+
+    # Retrieve the server IP
+    srv_ip=\$(get_srv_ip "\$vm_owner")
+
+    if [[ -n "\$srv_ip" ]]; then
+        echo "srv_ip='\$srv_ip'" >&2  # Debugging: Show the retrieved IP
+        update_nginx_config "\$srv_ip"  # Update NGINX configuration
+        reload_nginx  # Reload NGINX to apply changes
+    else
+        echo "⚠️ Failed to retrieve a valid server IP address. Exiting." >&2
+        exit 1
+    fi
+}
+
+# Execute the main function
+main
+"@
 
 # ============================================
 # Function Definitions
@@ -121,7 +211,10 @@ function Get-SrvIP {
     )
     try {
         Write-Host "🔍 Retrieving srv IP for owner '$vmOwner'..."
-        $ip = multipass exec $vmName -- sudo vx info | grep "$vmOwner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}'
+        $ip = multipass exec $vmName -- sudo vx info | Select-String -Pattern $vmOwner | ForEach-Object {
+            $_ -match '10\.\d{1,3}\.\d{1,3}\.\d{1,3}' | Out-Null
+            $Matches[0]
+        }
         if ($ip) {
             Write-Host "✅ Retrieved srv IP: $ip"
             return $ip
@@ -166,12 +259,77 @@ function Update-Hosts {
     }
 }
 
+# Function to install and configure NGINX on the VM
+function Configure-Nginx {
+    Write-Host "🚀 Installing and configuring NGINX on VM '$vmName'..."
 
+    try {
+        # Update package lists
+        Write-Host "🔄 Updating package lists..."
+        multipass exec $vmName -- sudo apt-get update -y
+
+        # Install NGINX
+        Write-Host "🔧 Installing NGINX..."
+        multipass exec $vmName -- sudo apt-get install -y nginx
+
+        # Start and enable NGINX service
+        Write-Host "🔄 Starting and enabling NGINX service..."
+        multipass exec $vmName -- sudo systemctl enable nginx
+        multipass exec $vmName -- sudo systemctl start nginx
+
+        # Check NGINX status
+        Write-Host "📋 Checking NGINX status..."
+        multipass exec $vmName -- systemctl status nginx --no-pager
+
+        # Configure NGINX default site
+        Write-Host "📝 Configuring NGINX default site..."
+        multipass exec $vmName -- sudo bash -c "cat > /etc/nginx/sites-available/default" <<< "$nginxConfig"
+
+        # Reload NGINX to apply configuration
+        Write-Host "🔄 Reloading NGINX to apply new configuration..."
+        multipass exec $vmName -- sudo nginx -t && sudo systemctl reload nginx
+
+        Write-Host "✅ NGINX installed and configured successfully."
+    }
+    catch {
+        Write-Host "⚠️ Failed to install or configure NGINX. Error: $_"
+    }
+}
+
+# Function to deploy update_srv_ip.sh and set up cron job
+function Setup-AutoUpdateScript {
+    Write-Host "🚀 Setting up auto-update script on VM '$vmName'..."
+
+    try {
+        # Create the update_srv_ip.sh script on the VM
+        Write-Host "📝 Creating update_srv_ip.sh script..."
+        multipass exec $vmName -- sudo bash -c "cat > /usr/local/bin/update_srv_ip.sh" <<< "$updateSrvIpScript"
+
+        # Make the script executable
+        Write-Host "🔧 Making update_srv_ip.sh executable..."
+        multipass exec $vmName -- sudo chmod +x /usr/local/bin/update_srv_ip.sh
+
+        # Execute the script once to ensure it's working
+        Write-Host "🚀 Executing update_srv_ip.sh script..."
+        multipass exec $vmName -- sudo /usr/local/bin/update_srv_ip.sh
+
+        # Set up cron job to run the script every 10 minutes
+        Write-Host "🕒 Setting up cron job for update_srv_ip.sh..."
+        $cronJob = "*/10 * * * * /bin/bash /usr/local/bin/update_srv_ip.sh >> /var/log/update_srv_ip.log 2>&1"
+        multipass exec $vmName -- sudo bash -c "(crontab -l 2>/dev/null; echo `"$cronJob`") | crontab -"
+
+        Write-Host "✅ Auto-update script and cron job set up successfully."
+    }
+    catch {
+        Write-Host "⚠️ Failed to set up auto-update script or cron job. Error: $_"
+    }
+}
 
 # ============================================
 # Main Script Execution
 # ============================================
-Write-Host "🚀 Configuring Multipass VM and Host Mapping..."
+Write-Host "🚀 Configuring Multipass VM, Host Mapping, and NGINX Setup..."
+
 # Ensure the script is running with root privileges
 if (-not (Test-Admin)) {    
     # Notify the user to rerun the script with sudo and exit
@@ -212,5 +370,11 @@ if ($ipAddress) {
 else {
     Write-Host "⚠️ Failed to retrieve VM IP address. Skipping hosts file update."
 }
+
+# Install and configure NGINX on the VM
+Configure-Nginx
+
+# Set up the auto-update script and cron job on the VM
+Setup-AutoUpdateScript
 
 Write-Host "🎉 All changes have been applied to VM '$vmName' successfully."
