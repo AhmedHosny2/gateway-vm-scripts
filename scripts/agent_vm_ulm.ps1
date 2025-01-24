@@ -1,7 +1,7 @@
 #!/usr/bin/env pwsh
 
 # ============================================
-# Script to Configure Multipass VM, Host Mapping, and NGINX Setup
+# Script to Configure Multipass VM and Host Mapping
 # ============================================
 
 # Define Configuration Variables
@@ -14,96 +14,7 @@ $hostInterface = "enp0s1"   # Replace with your host's external interface name
 $mappingHostname = "server.local"
 $hostsFilePath = "/etc/hosts"
 
-# Define NGINX Configuration
-$nginxConfig = @"
-server {
-    listen 80 default_server;
-    server_name _;
 
-    location / {
-        # server's IP 
-        proxy_pass http://10.1.0.123:3000; 
-        proxy_http_version 1.1;
-
-        # Preserve the original client IP
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        # Preserve the original Host header
-        proxy_set_header Host \$host;
-    }
-}
-"@
-
-# Define update_srv_ip.sh Script Content
-$updateSrvIpScript = @"
-#!/bin/bash
-
-set -e  # Exit immediately if a command exits with a non-zero status
-
-# Function to retrieve the server's IP using vx and the owner name
-get_srv_ip() {
-    local vm_owner="\$1"  # The owner name to filter by
-
-    echo "🔍 Retrieving srv IP for owner '\$vm_owner'..." >&2
-
-    # Run the vx command to retrieve IPs and filter by the owner
-    # Capture only the first IP match
-    local ip_address
-    ip_address=\$(sudo vx info | grep "\$vm_owner" | grep -oE '10\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | head -n1)
-
-    if [[ -n "\$ip_address" ]]; then
-        echo "✅ Retrieved srv IP: \$ip_address" >&2
-        echo "\$ip_address"
-    else
-        echo "⚠️ Unable to retrieve srv IP for owner '\$vm_owner'." >&2
-        return 1
-    fi
-}
-
-# Function to update NGINX configuration with the new IP
-update_nginx_config() {
-    local new_ip="\$1"
-    local nginx_config="/etc/nginx/sites-available/default"
-
-    echo "🔧 Updating NGINX configuration with new IP: \$new_ip..." >&2
-
-    # Backup the original NGINX configuration
-    sudo cp "\$nginx_config" "\${nginx_config}.bak"
-
-    # Use sed to replace the existing IP in the proxy_pass line
-    # This assumes the proxy_pass line follows the exact format:
-    # proxy_pass http://10.x.x.x:port;
-    sudo sed -i "s|proxy_pass http://10\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}\\.[0-9]\\{1,3\\}:[0-9]\\{1,5\\};|proxy_pass http://\$new_ip:3000;|g" "\$nginx_config"
-
-    echo "✅ NGINX configuration updated successfully." >&2
-}
-
-# Function to reload NGINX service
-reload_nginx() {
-    echo "🔄 Reloading NGINX service..." >&2
-    sudo nginx -t && sudo systemctl reload nginx
-    echo "✅ NGINX reloaded successfully." >&2
-}
-
-# Main execution block
-main() {
-    local vm_owner="ahmed.ho-1"  # Replace with the actual VM owner name
-
-    # Retrieve the server IP
-    srv_ip=\$(get_srv_ip "\$vm_owner")
-
-    if [[ -n "\$srv_ip" ]]; then
-        echo "srv_ip='\$srv_ip'" >&2  # Debugging: Show the retrieved IP
-        update_nginx_config "\$srv_ip"  # Update NGINX configuration
-        reload_nginx  # Reload NGINX to apply changes
-    else
-        echo "⚠️ Failed to retrieve a valid server IP address. Exiting." >&2
-        exit 1
-    fi
-}
-
-# Execute the main function
-main
-"@
 
 # ============================================
 # Function Definitions
@@ -259,7 +170,6 @@ function Update-Hosts {
     }
 }
 
-# Function to install and configure NGINX on the VM
 
 
 # Function to deploy update_srv_ip.sh and set up cron job
@@ -267,7 +177,7 @@ function Update-Hosts {
 # ============================================
 # Main Script Execution
 # ============================================
-Write-Host "🚀 Configuring Multipass VM, Host Mapping, and NGINX Setup..."
+Write-Host "🚀 Configuring Multipass VM and Host Mapping..."
 
 # Ensure the script is running with root privileges
 if (-not (Test-Admin)) {    
@@ -310,8 +220,6 @@ else {
     Write-Host "⚠️ Failed to retrieve VM IP address. Skipping hosts file update."
 }
 
-# Install and configure NGINX on the VM
-Configure-Nginx
 
 # Set up the auto-update script and cron job on the VM
 Setup-AutoUpdateScript
