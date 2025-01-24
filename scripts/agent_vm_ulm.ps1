@@ -148,6 +148,9 @@ function Update-Hosts {
         [string]$Hostname
     )
 
+    # Define the path to the hosts file
+    $hostsFilePath = "/etc/hosts"
+
     if (-not (Test-Path $hostsFilePath)) {
         Write-Host "⚠️ Hosts file not found at $hostsFilePath."
         return
@@ -156,7 +159,7 @@ function Update-Hosts {
     try {
         # Remove all existing entries for the hostname
         Write-Host "🔄 Removing all existing entries for '$Hostname' from $hostsFilePath..."
-        sudo sed -i "/\b$Hostname\b/d" $hostsFilePath
+        sudo sed -i '' "/$Hostname$/d" $hostsFilePath
         Write-Host "✅ Removed existing entries for '$Hostname'."
 
         # Add the new mapping
@@ -169,7 +172,6 @@ function Update-Hosts {
         Write-Host "⚠️ Failed to update /etc/hosts. Error: $_"
     }
 }
-
 
 
 # Function to deploy update_srv_ip.sh and set up cron job
