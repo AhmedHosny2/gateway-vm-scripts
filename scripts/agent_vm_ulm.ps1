@@ -260,70 +260,9 @@ function Update-Hosts {
 }
 
 # Function to install and configure NGINX on the VM
-function Configure-Nginx {
-    Write-Host "🚀 Installing and configuring NGINX on VM '$vmName'..."
 
-    try {
-        # Update package lists
-        Write-Host "🔄 Updating package lists..."
-        multipass exec $vmName -- sudo apt-get update -y
-
-        # Install NGINX
-        Write-Host "🔧 Installing NGINX..."
-        multipass exec $vmName -- sudo apt-get install -y nginx
-
-        # Start and enable NGINX service
-        Write-Host "🔄 Starting and enabling NGINX service..."
-        multipass exec $vmName -- sudo systemctl enable nginx
-        multipass exec $vmName -- sudo systemctl start nginx
-
-        # Check NGINX status
-        Write-Host "📋 Checking NGINX status..."
-        multipass exec $vmName -- systemctl status nginx --no-pager
-
-        # Configure NGINX default site
-        Write-Host "📝 Configuring NGINX default site..."
-        multipass exec $vmName -- sudo bash -c "cat > /etc/nginx/sites-available/default" <<< "$nginxConfig"
-
-        # Reload NGINX to apply configuration
-        Write-Host "🔄 Reloading NGINX to apply new configuration..."
-        multipass exec $vmName -- sudo nginx -t && sudo systemctl reload nginx
-
-        Write-Host "✅ NGINX installed and configured successfully."
-    }
-    catch {
-        Write-Host "⚠️ Failed to install or configure NGINX. Error: $_"
-    }
-}
 
 # Function to deploy update_srv_ip.sh and set up cron job
-function Setup-AutoUpdateScript {
-    Write-Host "🚀 Setting up auto-update script on VM '$vmName'..."
-
-    try {
-        # Create the update_srv_ip.sh script on the VM
-        Write-Host "📝 Creating update_srv_ip.sh script..."
-        multipass exec $vmName -- sudo bash -c "cat > /usr/local/bin/update_srv_ip.sh" <<< "$updateSrvIpScript"
-
-        # Make the script executable
-        Write-Host "🔧 Making update_srv_ip.sh executable..."
-        multipass exec $vmName -- sudo chmod +x /usr/local/bin/update_srv_ip.sh
-
-        # Execute the script once to ensure it's working
-        Write-Host "🚀 Executing update_srv_ip.sh script..."
-        multipass exec $vmName -- sudo /usr/local/bin/update_srv_ip.sh
-
-        # Set up cron job to run the script every 10 minutes
-        Write-Host "🕒 Setting up cron job for update_srv_ip.sh..."
-        $cronJob = "*/10 * * * * /bin/bash /usr/local/bin/update_srv_ip.sh >> /var/log/update_srv_ip.log 2>&1"
-        multipass exec $vmName -- sudo bash -c "(crontab -l 2>/dev/null; echo `"$cronJob`") | crontab -"
-
-        Write-Host "✅ Auto-update script and cron job set up successfully."
-    }
-    catch {
-        Write-Host "⚠️ Failed to set up auto-update script or cron job. Error: $_"
-    }
-}
 
 # ============================================
 # Main Script Execution
