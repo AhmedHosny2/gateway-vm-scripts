@@ -221,7 +221,4 @@ else {
 }
 
 
-# Set up the auto-update script and cron job on the VM
-Setup-AutoUpdateScript
-
 Write-Host "🎉 All changes have been applied to VM '$vmName' successfully."
