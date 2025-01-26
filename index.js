@@ -23,6 +23,28 @@ app.get("/setup_agent_vm", async (req, res) => {
   }
 });
 
+app.get("/setup_agent_vm_linux", async (req, res) => {
+  try {
+    const scriptPath = path.join(
+      __dirname,
+      ".",
+      "scripts",
+      "agent_vm_linux.ps1"
+    );
+    const scriptContent = await fs.readFile(scriptPath, "utf-8");
+
+    res.setHeader(
+      "Content-Disposition",
+      "attachment; filename=agent_vm_linux.ps1"
+    );
+    res.setHeader("Content-Type", "text/plain");
+    res.status(200).send(scriptContent);
+  } catch (error) {
+    console.error(error);
+    res.status(500).json({ error: "Failed to load script" });
+  }
+});
+
 app.get("/init_nginx", async (req, res) => {
   try {
     const scriptPath = path.join(__dirname, ".", "scripts", "init_nginx.sh");
