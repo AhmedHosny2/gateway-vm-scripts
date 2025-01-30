@@ -65,10 +65,8 @@ function Add-IptablesRules {
     $iptablesCommands = @(
         "sudo iptables -I FORWARD -p icmp -j ACCEPT",
         "sudo iptables -I FORWARD -p tcp --dport 80 -j ACCEPT",
-        "sudo iptables -I FORWARD -p tcp -d 10.1.0.113 --dport 80 -j ACCEPT",
         "sudo iptables -I FORWARD -m state --state ESTABLISHED,RELATED -j ACCEPT",
         "sudo iptables -t nat -I POSTROUTING -o $vmInterface -j MASQUERADE",
-        "sudo iptables -t nat -I PREROUTING -p udp --dport 8554 -j DNAT --to-destination 172.23.208.1",
         "sudo iptables -I INPUT -i $vmInterface -s 10.1.0.0/16 -j ACCEPT",
         "sudo iptables -I INPUT -i $vmInterface -d 10.1.0.0/16 -j ACCEPT",
         "sudo iptables -I FORWARD -i $vmInterface -s 10.1.0.0/16 -d 10.1.0.0/16 -j ACCEPT",
